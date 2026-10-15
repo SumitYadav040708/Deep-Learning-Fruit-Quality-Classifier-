@@ -1,0 +1,11 @@
+path: /kaggle/working/fruit_dataset_seg_sam_v1
+train: train/images
+val: valid/images
+nc: 6
+names:
+  0: apple
+  1: banana
+  2: orange
+  3: rotten_apple
+  4: rotten_banana
+  5: rotten_orange

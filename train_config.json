@@ -1,0 +1,67 @@
+{
+  "variant": "seg_cbam_focal_dice",
+  "model_yaml": "yolo11n-seg.yaml",
+  "pretrained": "yolo11n-seg.pt",
+  "data_yaml": "/kaggle/working/seg_config_v1/data_seg_trainval.yaml",
+  "data_yaml_sha1": "ab8eb49da23134067ea3a8b1793d0dba7d37118f",
+  "epochs": 50,
+  "train_args": {
+    "imgsz": 640,
+    "seed": 0,
+    "deterministic": true,
+    "batch": 16,
+    "workers": 2,
+    "save_period": 5,
+    "patience": 50,
+    "amp": "ultralytics default (fp16 autocast)"
+  },
+  "cbam": {
+    "enabled": true,
+    "kernel_size": 7,
+    "info": {
+      "layers": [
+        23,
+        24,
+        25
+      ],
+      "reads_from": [
+        16,
+        19,
+        22
+      ],
+      "channels": [
+        64,
+        128,
+        256
+      ],
+      "head_index": 26,
+      "orig_head_index": 23,
+      "kernel": 7,
+      "note": "Ultralytics CBAM (self, c1, kernel_size=7); channel branch uses max-pool: False; spatial branch uses channel-wise max: True (installed implementation; not necessarily identical to the original CBAM paper)"
+    },
+    "design": "3 NEW CBAM layers between the neck and the Segment head (YAML-level, Segment 'from' renumbered, pretrained head keys remapped); neck path unchanged",
+    "placement": "on the three Segment inputs (P3, P4, P5 neck outputs); my choice, guide placement values not visible to me"
+  },
+  "mask_loss": {
+    "enabled": true,
+    "focal_gamma": 2.0,
+    "focal_alpha": 0.25,
+    "focal_weight": 1.0,
+    "dice_weight": 1.0,
+    "dice_eps": 1.0,
+    "patched": "v8SegmentationLoss.single_mask_loss (mask branch only; box/cls/dfl untouched)",
+    "crop": "installed crop_mask via non-mutating _crop (crop_mask mutates input: True)",
+    "orig_source_sha": "e63c61f6bfb9"
+  },
+  "ultralytics": "8.4.177",
+  "torch": "2.11.0+cu128",
+  "label": "SAM pseudo-labels (whole-fruit masks) - NOT ground truth, NOT defect masks",
+  "params": {
+    "baseline": 2843778,
+    "with_cbam": 2930536
+  },
+  "pretrained_resolved": "yolo11n-seg.pt",
+  "created": "2026-10-14 16:47:35",
+  "python_info": "torch 2.11.0+cu128, ultralytics 8.4.177",
+  "gpu": "Tesla T4"
+}
