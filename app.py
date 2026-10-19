@@ -14,7 +14,32 @@ from PIL import Image, UnidentifiedImageError
 
 LOGGER = logging.getLogger("fruit_quality_analyzer")
 PROJECT_DIR = Path(__file__).resolve().parent
-MODEL_PATH = PROJECT_DIR / "best.pt"
+MODEL_CONFIGS = (
+	{
+		"key": "det_n_s0",
+		"label": "Detection",
+		"filename": "det_n_s0.pt",
+		"task": "detect",
+	},
+	{
+		"key": "seg_cbam_n_s0",
+		"label": "CBAM segmentation",
+		"filename": "seg_cbam_n_s0.pt",
+		"task": "segment",
+	},
+	{
+		"key": "seg_n_s0",
+		"label": "Segmentation",
+		"filename": "seg_n_s0.pt",
+		"task": "segment",
+	},
+	{
+		"key": "seg_cbam_focal_dice_n_s0",
+		"label": "CBAM + Focal/Dice segmentation",
+		"filename": "seg_cbam_focal_dice_n_s0.pt",
+		"task": "segment",
+	},
+)
 FRESH_CLASSES = {"apple", "banana", "orange"}
 ROTTEN_CLASSES = {"rotten_apple", "rotten_banana", "rotten_orange"}
 TABLE_COLUMNS = [
@@ -36,12 +61,9 @@ st.set_page_config(
 )
 
 
-@st.cache_resource(show_spinner="Loading the fruit segmentation model...")
-def load_model() -> Any:
-	"""Load the project checkpoint using its recorded Ultralytics architecture."""
-	if not MODEL_PATH.is_file():
-		raise FileNotFoundError(f"Model checkpoint not found: {MODEL_PATH}")
-
+@st.cache_resource(show_spinner="Loading all four fruit models...")
+def load_models() -> dict[str, Any]:
+	"""Load all project checkpoints using their recorded Ultralytics architectures."""
 	try:
 		from ultralytics import YOLO
 	except Exception as exc:
@@ -51,18 +73,30 @@ def load_model() -> Any:
 			"project requirements with `python -m pip install -r requirements.txt`."
 		) from exc
 
-	try:
-		return YOLO(str(MODEL_PATH))
-	except Exception as exc:
-		LOGGER.exception("Unable to load checkpoint at %s", MODEL_PATH)
-		module_name = getattr(exc, "name", None)
-		if module_name == "ultralytics.nn.modules.conv" or "CBAM" in str(exc):
+	models: dict[str, Any] = {}
+	for config in MODEL_CONFIGS:
+		model_path = PROJECT_DIR / config["filename"]
+		if not model_path.is_file():
+			raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+		try:
+			model = YOLO(str(model_path))
+		except Exception as exc:
+			LOGGER.exception("Unable to load checkpoint at %s", model_path)
+			module_name = getattr(exc, "name", None)
+			if module_name == "ultralytics.nn.modules.conv" or "CBAM" in str(exc):
+				raise RuntimeError(
+					f"{config['filename']} requires Ultralytics' built-in CBAM module "
+					"(`ultralytics.nn.modules.conv.CBAM`). Install the pinned "
+					"Ultralytics 8.4.177 version from requirements.txt."
+				) from exc
+			raise RuntimeError(f"Could not load {config['filename']}: {exc}") from exc
+		if model.task != config["task"]:
 			raise RuntimeError(
-				"The checkpoint requires Ultralytics' built-in CBAM module "
-				"(`ultralytics.nn.modules.conv.CBAM`). Install the pinned "
-				"Ultralytics 8.4.177 version from requirements.txt."
-			) from exc
-		raise RuntimeError(f"Could not load best.pt: {exc}") from exc
+				f"{config['filename']} is a {model.task} model; "
+				f"expected a {config['task']} model."
+			)
+		models[config["key"]] = model
+	return models
 
 
 def read_uploaded_image(image_bytes: bytes) -> Image.Image:
@@ -116,10 +150,13 @@ def make_annotated_image(result: Any, show_masks: bool, show_boxes: bool) -> Ima
 
 
 def render_results(
+	model_label: str,
+	model_filename: str,
 	analysis: dict[str, Any],
 	original_image: Image.Image,
 	show_masks: bool,
 	show_boxes: bool,
+	supports_masks: bool,
 	confidence_threshold: float,
 	image_size: int,
 ) -> None:
@@ -132,8 +169,11 @@ def render_results(
 		float(detections["Confidence"].mean()) if total else None
 	)
 
-	st.subheader("Analysis results")
-	annotated = make_annotated_image(analysis["prediction"], show_masks, show_boxes)
+	st.subheader(model_label)
+	st.caption(f"Checkpoint: `{model_filename}`")
+	annotated = make_annotated_image(
+		analysis["prediction"], show_masks and supports_masks, show_boxes
+	)
 	metric_columns = st.columns(4)
 	metric_columns[0].metric("Detected fruits", total)
 	metric_columns[1].metric("Fresh-class predictions", fresh_count)
@@ -149,7 +189,11 @@ def render_results(
 	with result_column:
 		st.image(
 			annotated,
-			caption="Whole-fruit segmentation predictions",
+			caption=(
+				"Whole-fruit segmentation predictions"
+				if supports_masks
+				else "Detection predictions (this model does not produce masks)"
+			),
 			use_container_width=True,
 		)
 
@@ -173,14 +217,14 @@ def render_results(
 	download_columns[0].download_button(
 		"Download detection table (CSV)",
 		data=csv_bytes,
-		file_name="fruit_detections.csv",
+		file_name=f"fruit_detections_{model_filename.removesuffix('.pt')}.csv",
 		mime="text/csv",
 		use_container_width=True,
 	)
 	download_columns[1].download_button(
 		"Download annotated image (PNG)",
 		data=png_buffer.getvalue(),
-		file_name="fruit_quality_result.png",
+		file_name=f"fruit_quality_result_{model_filename.removesuffix('.pt')}.png",
 		mime="image/png",
 		use_container_width=True,
 	)
@@ -210,7 +254,7 @@ st.markdown(
 
 st.title("Fruit Quality Analyzer")
 st.write(
-	"Inspect fruit images with whole-fruit instance segmentation and fresh/rotten class predictions."
+	"Run one fruit image through four trained models and compare their independent predictions."
 )
 
 with st.sidebar:
@@ -227,9 +271,9 @@ with st.sidebar:
 	show_boxes = st.checkbox("Show bounding boxes and labels", value=True)
 	st.divider()
 	st.caption(
-		"Rotten-region percentages are unavailable. This checkpoint segments whole fruits, "
-		"not individual rotten patches. Pixel-level rotten-region analysis requires "
-		"separately annotated rotten-region masks and a model trained on them."
+		"Three models segment whole fruits; the detection model does not produce masks. "
+		"Rotten-region percentages are unavailable because none of these models segments "
+		"individual rotten patches."
 	)
 
 uploaded_file = st.file_uploader(
@@ -251,50 +295,64 @@ else:
 	else:
 		st.image(original_image, caption="Original image", use_container_width=True)
 		run_inference = st.button(
-			"Analyze image", type="primary", use_container_width=True
+			"Analyze with all four models", type="primary", use_container_width=True
 		)
 		if run_inference:
 			try:
-				model = load_model()
-				with st.spinner("Analyzing fruit instances..."):
-					prediction = model.predict(
-						source=original_image,
-						conf=confidence_threshold,
-						imgsz=image_size,
-						verbose=False,
-					)[0]
-					detections = build_detection_table(prediction)
-					speed = getattr(prediction, "speed", None)
-					inference_ms = (
-						float(speed["inference"])
-						if isinstance(speed, dict) and speed.get("inference") is not None
-						else None
-					)
+				models = load_models()
+				analyses: dict[str, Any] = {}
+				with st.spinner("Running inference with all four models..."):
+					for config in MODEL_CONFIGS:
+						prediction = models[config["key"]].predict(
+							source=original_image,
+							conf=confidence_threshold,
+							imgsz=image_size,
+							verbose=False,
+						)[0]
+						detections = build_detection_table(prediction)
+						speed = getattr(prediction, "speed", None)
+						inference_ms = (
+							float(speed["inference"])
+							if isinstance(speed, dict)
+							and speed.get("inference") is not None
+							else None
+						)
+						analyses[config["key"]] = {
+							"detections": detections,
+							"prediction": prediction,
+							"inference_ms": inference_ms,
+						}
 				st.session_state["fruit_analysis"] = {
 					"upload_hash": upload_hash,
-					"detections": detections,
-					"prediction": prediction,
-					"inference_ms": inference_ms,
+					"analyses": analyses,
 					"confidence_threshold": confidence_threshold,
 					"image_size": image_size,
 				}
 			except Exception as exc:
-				LOGGER.exception("Fruit image inference failed")
+				LOGGER.exception("Fruit image inference failed for one or more models")
 				st.session_state.pop("fruit_analysis", None)
 				st.error(f"Analysis could not be completed: {exc}")
 
 		analysis = st.session_state.get("fruit_analysis")
 		if analysis and analysis.get("upload_hash") == upload_hash:
-			render_results(
-				analysis,
-				original_image,
-				show_masks,
-				show_boxes,
-				confidence_threshold,
-				image_size,
-			)
+			st.subheader("Analysis results by model")
+			result_tabs = st.tabs([config["label"] for config in MODEL_CONFIGS])
+			for config, result_tab in zip(MODEL_CONFIGS, result_tabs):
+				with result_tab:
+					render_results(
+						config["label"],
+						config["filename"],
+						analysis["analyses"][config["key"]],
+						original_image,
+						show_masks,
+						show_boxes,
+						config["task"] == "segment",
+						confidence_threshold,
+						image_size,
+					)
 
 st.divider()
 st.caption(
-	"This model predicts whole-fruit masks and fruit-level classes. Its masks are not rotten-region masks."
+	"Each model reports its own fruit detections. Segmentation masks cover whole fruits, "
+	"not rotten regions; predictions are not verified judgments of food safety."
 )
